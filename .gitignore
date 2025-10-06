@@ -1,0 +1,50 @@
+# ===============================
+# 🛡️  Git Ignore for Streamlit app
+# ===============================
+
+# Ignore all CSV files (user uploads)
+*.csv
+
+# Ignore Excel or other potential data uploads
+*.xls
+*.xlsx
+*.xlsm
+*.ods
+*.txt
+*.tsv
+*.json
+*.xml
+
+# Ignore temporary or hidden files
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+
+# Ignore local Python environment folders
+venv/
+.env/
+.env.bak/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore Streamlit cache (contains uploaded files!)
+.streamlit/
+.streamlit/cache/
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# Ignore Jupyter or notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore local test files and backups
+test_*.csv
+backup_*.csv
+old_*.csv
+data/
+uploads/
+temp/
+tmp/
