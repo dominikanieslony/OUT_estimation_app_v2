@@ -10,7 +10,6 @@
 *.xlsx
 *.xlsm
 *.ods
-*.txt
 *.tsv
 *.json
 *.xml
