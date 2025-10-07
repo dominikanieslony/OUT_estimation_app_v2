@@ -15,7 +15,12 @@ def detect_encoding_and_read(uploaded_file):
     except Exception:
         text = raw.decode("utf-8", errors="replace")
     uploaded_file.seek(0)
-    df = pd.read_csv(io.StringIO(text), sep=None, engine="python")
+    # Wykrywanie separatora na podstawie pierwszego wiersza
+    first_line = text.splitlines()[0]
+    sep = "\t" if "\t" in first_line else ","
+    df = pd.read_csv(io.StringIO(text), sep=sep, decimal=",")
+    # usuń spacje wokół nazw kolumn
+    df.columns = [col.strip() for col in df.columns]
     return df
 
 def clean_demand_series(s: pd.Series) -> pd.Series:
@@ -62,7 +67,10 @@ def estimate_demand(earlier_df, later_df, pct):
 # ------------------ Streamlit UI ------------------
 st.title("📊 Campaign Estimator")
 
-uploaded_file = st.file_uploader("Wgraj plik CSV z kolumnami: Start, End, Country, Name, Description, Category, Demand", type=["csv"])
+uploaded_file = st.file_uploader(
+    "Wgraj plik CSV z kolumnami: Start, End, Country, Name, Description, Category, Demand",
+    type=["csv"]
+)
 if not uploaded_file:
     st.info("Prześlij plik CSV, aby rozpocząć.")
     st.stop()
@@ -105,7 +113,10 @@ earlier_start_date = st.date_input("Start date (Earlier Period):", key="earlier_
 earlier_end_date = st.date_input("End date (Earlier Period):", key="earlier_end")
 
 st.subheader("📈 Target growth from Earlier Period (%)")
-target_growth = st.number_input("Enter growth percentage (can be negative):", min_value=-100, max_value=1000, step=1, format="%d")
+target_growth = st.number_input(
+    "Enter growth percentage (can be negative):",
+    min_value=-100, max_value=1000, step=1, format="%d"
+)
 
 st.subheader("⏳ Later Period")
 later_start_date = st.date_input("Start date (Later Period):", key="later_start")
@@ -120,11 +131,15 @@ if selected_category != "All" and "Category" in df.columns:
 if campaign_filter and len(campaign_filter) >= 3:
     df_filtered = df_filtered[similar_title_mask(df_filtered, campaign_filter)]
 
-earlier_filtered = df_filtered[(df_filtered["Start"] >= pd.to_datetime(earlier_start_date)) &
-                               (df_filtered["End"] <= pd.to_datetime(earlier_end_date))]
+earlier_filtered = df_filtered[
+    (df_filtered["Start"] >= pd.to_datetime(earlier_start_date)) &
+    (df_filtered["End"] <= pd.to_datetime(earlier_end_date))
+]
 
-later_filtered = df_filtered[(df_filtered["Start"] >= pd.to_datetime(later_start_date)) &
-                             (df_filtered["End"] <= pd.to_datetime(later_end_date))]
+later_filtered = df_filtered[
+    (df_filtered["Start"] >= pd.to_datetime(later_start_date)) &
+    (df_filtered["End"] <= pd.to_datetime(later_end_date))
+]
 
 # wybór kampanii
 st.subheader("Select campaigns to include from Earlier Period:")
