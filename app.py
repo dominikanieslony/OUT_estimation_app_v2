@@ -15,11 +15,19 @@ def detect_encoding_and_read(uploaded_file):
     except Exception:
         text = raw.decode("utf-8", errors="replace")
     uploaded_file.seek(0)
-    # Wykrywanie separatora na podstawie pierwszego wiersza
-    first_line = text.splitlines()[0]
-    sep = "\t" if "\t" in first_line else ","
-    df = pd.read_csv(io.StringIO(text), sep=sep, decimal=",")
-    # usuń spacje wokół nazw kolumn
+
+    # Wykrywanie separatora na podstawie drugiego wiersza (pierwszy może być opisem)
+    lines = text.splitlines()
+    if len(lines) < 2:
+        sep = ","
+    else:
+        second_line = lines[1]
+        sep = "\t" if "\t" in second_line else ","
+
+    # Wczytanie CSV z drugiego wiersza jako header
+    df = pd.read_csv(io.StringIO(text), sep=sep, decimal=",", header=1)
+
+    # Usuń spacje wokół nazw kolumn
     df.columns = [col.strip() for col in df.columns]
     return df
 
