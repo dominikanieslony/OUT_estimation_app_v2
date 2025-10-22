@@ -1,203 +1,151 @@
 import streamlit as st
 import pandas as pd
-import chardet
-import io
-from datetime import date
+from openpyxl import load_workbook
+from datetime import datetime
+from io import BytesIO
 
-st.set_page_config(page_title="Campaign Estimator", page_icon="📊", layout="wide")
+st.title("📊 Campaign Revenue Predictor (Merged Excel Support)")
 
-# ------------------ Funkcje pomocnicze ------------------
-def detect_encoding_and_read(uploaded_file):
-    raw = uploaded_file.read()
-    enc = chardet.detect(raw).get("encoding", "utf-8")
+# === 1️⃣ Funkcja usuwająca scalenia i uzupełniająca wartości ===
+def unmerge_excel_cells(file):
     try:
-        text = raw.decode(enc)
-    except Exception:
-        text = raw.decode("utf-8", errors="replace")
-    uploaded_file.seek(0)
+        in_memory_file = BytesIO(file.read())
+        wb = load_workbook(in_memory_file)
+        all_dfs = []
 
-    # Wykrywanie separatora na podstawie drugiego wiersza (pierwszy może być opisem)
-    lines = text.splitlines()
-    if len(lines) < 2:
-        sep = ","
-    else:
-        second_line = lines[1]
-        sep = "\t" if "\t" in second_line else ","
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
 
-    # Wczytanie CSV z drugiego wiersza jako header
-    df = pd.read_csv(io.StringIO(text), sep=sep, decimal=",", header=1)
+            # Rozpakowanie scalonych komórek
+            merged_ranges = list(ws.merged_cells.ranges)
+            for merged_range in merged_ranges:
+                top_left = merged_range.min_row, merged_range.min_col
+                value = ws.cell(*top_left).value
+                ws.unmerge_cells(str(merged_range))
+                # Wstaw wartość do wszystkich komórek byłego scalenia
+                for row in ws.iter_rows(
+                    min_row=merged_range.min_row,
+                    max_row=merged_range.max_row,
+                    min_col=merged_range.min_col,
+                    max_col=merged_range.max_col
+                ):
+                    for cell in row:
+                        cell.value = value
 
-    # Usuń spacje wokół nazw kolumn
-    df.columns = [col.strip() for col in df.columns]
-    return df
+            # Konwersja arkusza na DataFrame
+            data = ws.values
+            columns = next(data)
+            df = pd.DataFrame(data, columns=columns)
+            all_dfs.append(df)
 
-def clean_demand_series(s: pd.Series) -> pd.Series:
-    def parse_val(val):
+        wb.close()
+
+        # Połączenie wszystkich arkuszy
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        return combined_df
+
+    except Exception as e:
+        st.error(f"❌ Error processing merged Excel cells: {e}")
+        return pd.DataFrame()
+
+# === 2️⃣ Czyszczenie kolumny Demand ===
+def clean_demand_column(df):
+    def parse_demand(val):
         if pd.isna(val):
             return None
-        v = str(val).strip()
-        v = v.replace("€", "").replace("\u00A0", "").replace(" ", "")
-        # usuń przecinki jako separator tysięcy
-        v = v.replace(",", "")
-        # zostaw tylko cyfry, kropkę i minus
-        cleaned = ''.join(ch for ch in v if (ch.isdigit() or ch in ".-"))
-        if cleaned in ["", ".", "-", "-."]:
-            return None
+        val = str(val)
+        val = val.replace('€', '').replace(' ', '')
+        val = val.replace('.', '').replace(',', '.')
         try:
-            return float(cleaned)
-        except Exception:
+            return float(val)
+        except ValueError:
             return None
-    return s.apply(parse_val)
+    if 'Demand' in df.columns:
+        df['Demand'] = df['Demand'].apply(parse_demand)
+    return df
 
-def similar_title_mask(df, phrase):
-    if not phrase:
-        return pd.Series([True]*len(df), index=df.index)
-    pref = phrase[:3].lower()
-    name_col = df["Name"].fillna("").astype(str).str.lower()
-    desc_col = df["Description"].fillna("").astype(str).str.lower()
-    starts = name_col.str.startswith(pref) | desc_col.str.startswith(pref)
-    if starts.any():
-        return starts
-    return name_col.str.contains(pref, na=False) | desc_col.str.contains(pref, na=False)
+# === 3️⃣ Filtrowanie danych po tekście i dacie ===
+def filter_data(df, text_filter, start_date, end_date):
+    df_filtered = df.copy()
 
-def estimate_demand(earlier_df, later_df, pct):
-    earlier_mean = earlier_df["Demand"].mean() if not earlier_df.empty else 0
-    later_mean = later_df["Demand"].mean() if not later_df.empty else 0
-    adjusted_earlier = earlier_mean * (1 + pct/100.0)
-    if earlier_df.empty and later_df.empty:
+    # Konwersja dat
+    if 'Start' in df_filtered.columns:
+        df_filtered['Start'] = pd.to_datetime(df_filtered['Start'], errors='coerce')
+    if 'End' in df_filtered.columns:
+        df_filtered['End'] = pd.to_datetime(df_filtered['End'], errors='coerce')
+
+    # Filtrowanie po dacie
+    if 'Start' in df_filtered.columns and 'End' in df_filtered.columns:
+        df_filtered = df_filtered[
+            (df_filtered['Start'] >= pd.to_datetime(start_date)) &
+            (df_filtered['End'] <= pd.to_datetime(end_date))
+        ]
+
+    # Filtrowanie po tekście w Name lub Description
+    if text_filter and len(text_filter) >= 2:
+        mask_name = df_filtered['Name'].astype(str).str.contains(text_filter, case=False, na=False)
+        mask_desc = df_filtered['Description'].astype(str).str.contains(text_filter, case=False, na=False)
+        df_filtered = df_filtered[mask_name | mask_desc]
+
+    return df_filtered
+
+# === 4️⃣ Obliczanie średniego przychodu ===
+def calculate_average_demand(df):
+    if df.empty or 'Demand' not in df.columns:
         return None
-    if earlier_df.empty:
-        return later_mean
-    if later_df.empty:
-        return adjusted_earlier
-    return (adjusted_earlier + later_mean) / 2.0
+    valid_values = df['Demand'].dropna()
+    if valid_values.empty:
+        return None
+    return valid_values.mean()
 
-# ------------------ Streamlit UI ------------------
-st.title("📊 Campaign Estimator")
+# === 📂 Upload pliku ===
+uploaded_file = st.file_uploader("📥 Upload Excel file (.xlsx / .xls)", type=["xlsx", "xls"])
 
-uploaded_file = st.file_uploader(
-    "Wgraj plik CSV z kolumnami: Start, End, Country, Name, Description, Category, Demand",
-    type=["csv"]
-)
-if not uploaded_file:
-    st.info("Prześlij plik CSV, aby rozpocząć.")
-    st.stop()
+if uploaded_file:
+    df = unmerge_excel_cells(uploaded_file)
 
-try:
-    df = detect_encoding_and_read(uploaded_file)
-except Exception as e:
-    st.error(f"Nie udało się wczytać pliku: {e}")
-    st.stop()
+    if not df.empty:
+        df = clean_demand_column(df)
 
-# upewnij się, że kolumny istnieją
-required_cols = {"Start", "End", "Country", "Name", "Description", "Demand"}
-if not required_cols.issubset(df.columns):
-    st.error(f"Brakuje wymaganych kolumn: {required_cols - set(df.columns)}")
-    st.stop()
+        # Wyświetlenie podglądu
+        with st.expander("🔍 Preview loaded data"):
+            st.dataframe(df.head(50))
 
-# czyszczenie danych
-df["Start"] = pd.to_datetime(df["Start"], dayfirst=True, errors="coerce")
-df["End"] = pd.to_datetime(df["End"], dayfirst=True, errors="coerce")
-df["Demand"] = clean_demand_series(df["Demand"])
+        # === 🔎 Filtry użytkownika ===
+        st.subheader("🔧 Filter campaigns")
+        text_filter = st.text_input("Search by Name or Description (min 2 letters):")
 
-# wybór kraju
-countries = sorted(df["Country"].dropna().astype(str).unique().tolist())
-selected_country = st.selectbox("🌍 Wybierz kraj:", countries)
+        st.subheader("📆 Select time period")
+        min_date = pd.to_datetime(df['Start'], errors='coerce').min()
+        max_date = pd.to_datetime(df['End'], errors='coerce').max()
+        start_date = st.date_input("Start date:", min_date if pd.notna(min_date) else datetime(2024, 1, 1))
+        end_date = st.date_input("End date:", max_date if pd.notna(max_date) else datetime.today())
 
-# kategoria (opcjonalnie)
-categories = df["Category"].dropna().unique().tolist() if "Category" in df.columns else []
-if categories:
-    categories = sorted(categories)
-    selected_category = st.selectbox("🏷️ Wybierz kategorię:", ["All"] + categories)
-else:
-    selected_category = "All"
+        # === 📉 Filtrowanie danych ===
+        filtered_df = filter_data(df, text_filter, start_date, end_date)
 
-# fraza
-campaign_filter = st.text_input("🔎 Nazwa kampanii (fraza, min. 3 znaki):")
-
-# okresy
-st.subheader("⏳ Earlier Period")
-earlier_start_date = st.date_input("Start date (Earlier Period):", key="earlier_start")
-earlier_end_date = st.date_input("End date (Earlier Period):", key="earlier_end")
-
-st.subheader("📈 Target growth from Earlier Period (%)")
-target_growth = st.number_input(
-    "Enter growth percentage (can be negative):",
-    min_value=-100, max_value=1000, step=1, format="%d"
-)
-
-st.subheader("⏳ Later Period")
-later_start_date = st.date_input("Start date (Later Period):", key="later_start")
-later_end_date = st.date_input("End date (Later Period):", key="later_end")
-
-# filtracja danych
-df_filtered = df[df["Country"] == selected_country].copy()
-
-if selected_category != "All" and "Category" in df.columns:
-    df_filtered = df_filtered[df_filtered["Category"].astype(str).str.lower() == selected_category.lower()]
-
-if campaign_filter and len(campaign_filter) >= 3:
-    df_filtered = df_filtered[similar_title_mask(df_filtered, campaign_filter)]
-
-earlier_filtered = df_filtered[
-    (df_filtered["Start"] >= pd.to_datetime(earlier_start_date)) &
-    (df_filtered["End"] <= pd.to_datetime(earlier_end_date))
-]
-
-later_filtered = df_filtered[
-    (df_filtered["Start"] >= pd.to_datetime(later_start_date)) &
-    (df_filtered["End"] <= pd.to_datetime(later_end_date))
-]
-
-# wybór kampanii
-st.subheader("Select campaigns to include from Earlier Period:")
-earlier_selections = {
-    idx: st.checkbox(
-        f"{row['Name']} | {row['Description']} | Start: {row['Start'].date() if pd.notna(row['Start']) else 'n/a'} | "
-        f"End: {row['End'].date() if pd.notna(row['End']) else 'n/a'} | Demand: {row['Demand']}",
-        value=True, key=f"earlier_{idx}"
-    )
-    for idx, row in earlier_filtered.iterrows()
-}
-
-st.subheader("Select campaigns to include from Later Period:")
-later_selections = {
-    idx: st.checkbox(
-        f"{row['Name']} | {row['Description']} | Start: {row['Start'].date() if pd.notna(row['Start']) else 'n/a'} | "
-        f"End: {row['End'].date() if pd.notna(row['End']) else 'n/a'} | Demand: {row['Demand']}",
-        value=True, key=f"later_{idx}"
-    )
-    for idx, row in later_filtered.iterrows()
-}
-
-earlier_selected_df = earlier_filtered.loc[[idx for idx, checked in earlier_selections.items() if checked]]
-later_selected_df = later_filtered.loc[[idx for idx, checked in later_selections.items() if checked]]
-
-# obliczanie estymacji
-if st.button("📈 Calculate Estimation"):
-    if earlier_selected_df.empty and later_selected_df.empty:
-        st.warning("⚠️ No campaigns selected in either period for estimation.")
-    else:
-        estimation = estimate_demand(earlier_selected_df, later_selected_df, target_growth)
-        if estimation is None:
-            st.warning("⚠️ Unable to calculate estimation with the given data.")
+        if filtered_df.empty:
+            st.warning("⚠️ No data found for selected filters.")
         else:
-            st.success(f"Estimated Demand: **{estimation:.2f} EUR**")
-            st.markdown("### Data used for estimation:")
+            st.success(f"✅ {len(filtered_df)} records found.")
 
-            if not earlier_selected_df.empty:
-                st.write("Earlier Period Campaigns:")
-                st.dataframe(earlier_selected_df)
+            st.subheader("📊 Filtered campaigns:")
+            st.dataframe(filtered_df)
 
-            if not later_selected_df.empty:
-                st.write("Later Period Campaigns:")
-                st.dataframe(later_selected_df)
+            # === 📈 Obliczanie średniego przychodu ===
+            avg_demand = calculate_average_demand(filtered_df)
+            if avg_demand is not None:
+                st.success(f"💰 Estimated Average Revenue (Demand): **{avg_demand:.2f} EUR**")
+            else:
+                st.warning("⚠️ Could not calculate average revenue (missing or invalid Demand values).")
 
-            combined_df = pd.concat([earlier_selected_df, later_selected_df]).drop_duplicates()
-            csv = combined_df.to_csv(index=False).encode('utf-8')
+            # === 💾 Pobranie danych ===
+            csv = filtered_df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📥 Download selected campaigns data as CSV",
+                label="📥 Download filtered data as CSV",
                 data=csv,
-                file_name="campaign_estimation_data.csv",
-                mime="text/csv"
+                file_name='filtered_campaign_data.csv',
+                mime='text/csv'
             )
+    else:
+        st.error("❌ No data found in Excel file.")
