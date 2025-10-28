@@ -105,7 +105,8 @@ if uploaded_file:
         raw_bytes = uploaded_file.read()
         df = load_excel_and_unmerge(raw_bytes)
 
-        st.write("✅ Columns found:", list(df.columns))
+        st.write("📋 Preview of loaded data:")
+        st.dataframe(df.head(20))
 
         required_cols = {'Start', 'End', 'Name', 'Description', 'Demand'}
         if not required_cols.issubset(df.columns):
