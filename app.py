@@ -74,9 +74,7 @@ def clean_demand_column(df, demand_col='Demand'):
 
     if demand_col in df.columns:
         df[demand_col] = df[demand_col].apply(parse_demand)
-        valid = df[demand_col].notna().sum()
-        invalid = df[demand_col].isna().sum()
-        st.info(f"Demand cleaned — valid: {valid}, invalid: {invalid}")
+        # st.info(f"Demand cleaned — valid: {valid}, invalid: {invalid}")  # <-- linia usunięta
     else:
         st.warning(f"Column '{demand_col}' not found.")
     return df
@@ -139,7 +137,7 @@ def reorder_columns(df):
 
 
 # ---- Main UI ----
-st.title("📊 Campaign Estimator (Excel)")
+st.title("📊 Campaign demand estimation app")
 
 uploaded_file = st.file_uploader("📂 Upload campaign data Excel file (.xlsx/.xls)", type=["xlsx", "xls"])
 
@@ -152,7 +150,7 @@ if uploaded_file is not None:
             st.error("No data read from Excel.")
         else:
             df.columns = df.columns.astype(str).str.strip().str.replace(r'[\u00A0\u202F]', '', regex=True)
-            # linia "Columns found" usunięta
+            # linia wyświetlająca kolumny usunięta
 
             required_cols = {'Country', 'Name', 'Description', 'Start', 'End', 'Demand'}
             missing = required_cols - set(df.columns)
