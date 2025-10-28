@@ -2,153 +2,210 @@ import streamlit as st
 import pandas as pd
 import io
 from openpyxl import load_workbook
-import re
+from datetime import datetime
 
-st.title("📊 Campaign Estimator (Excel version, cleaned headers)")
+st.set_page_config(page_title="📊 Campaign Estimator", layout="wide")
 
-@st.cache_data
 def load_excel_and_unmerge(file_bytes):
-    # Załaduj plik z openpyxl i usuń scalenia komórek
-    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
-    ws = wb.active
+wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
+ws = wb.active
 
-    for merged in list(ws.merged_cells.ranges):
-        ws.unmerge_cells(str(merged))
-        top_left_value = ws[merged.coord.split(':')[0]].value
-        for row in ws[str(merged)]:
-            for cell in row:
-                cell.value = top_left_value
+```
+# Usuń scalone komórki i wypełnij wartości
+for merged_range in list(ws.merged_cells.ranges):
+    ws.unmerge_cells(str(merged_range))
+for col in ws.columns:
+    prev_value = None
+    for cell in col:
+        if cell.value is not None:
+            prev_value = cell.value
+        else:
+            cell.value = prev_value
 
-    data = ws.values
-    cols = next(data)
-    df = pd.DataFrame(data, columns=cols)
+data = ws.values
+columns = next(data)
+df = pd.DataFrame(data, columns=columns)
+df = df.ffill(axis=0)
 
-    # Wypełnij brakujące wartości (po scaleniu komórek)
-    df = df.ffill(axis=0)
+# Oczyść nagłówki kolumn
+df.columns = (
+    df.columns.astype(str)
+    .str.strip()
+    .str.replace('\u00A0', '', regex=False)
+    .str.replace('\u202F', '', regex=False)
+)
 
-    # Oczyść nagłówki kolumn — usuń spacje i niełamliwe znaki
-    df.columns = (
-        df.columns.astype(str)
-        .str.strip()
-        .str.replace('\u00A0', '', regex=False)
-    )
-
-    return df
-
+return df
+```
 
 def clean_demand_column(df):
-    def parse_demand(val):
-        if pd.isna(val):
-            return None
-        val = str(val).replace('\u00A0', '').replace(' ', '')
-        val = re.sub(r'[^\d,.-]', '', val)
-        if val.count(',') == 1 and val.count('.') == 0:
-            val = val.replace(',', '.')
-        try:
-            num = float(val)
-            if num > 1e9 or num < -1e9:
-                return None
-            return num
-        except ValueError:
-            return None
+def parse_demand(val):
+if pd.isna(val):
+return None
+val = str(val).strip()
+val = val.replace('€', '').replace(' ', '').replace('\u00A0', '').replace('\u202F', '')
+val = val.replace(',', '.')
+try:
+return float(val)
+except ValueError:
+return None
+if 'Demand' in df.columns:
+df['Demand'] = df['Demand'].apply(parse_demand)
+return df
 
-    if 'Demand' in df.columns:
-        df['Demand'] = df['Demand'].apply(parse_demand)
-        valid_count = df['Demand'].notna().sum()
-        invalid_count = df['Demand'].isna().sum()
-        st.info(f"📈 Demand column cleaned — valid: {valid_count}, invalid: {invalid_count}")
-    else:
-        st.warning("⚠️ Column 'Demand' not found in file.")
-    return df
+def filter_data(df, country, search_filter, start_date, end_date, selected_category=None):
+df_filtered = df[df['Country'] == country].copy()
 
+```
+# Wyczyść tekstowe kolumny
+for col in ['Name', 'Description', 'Category']:
+    if col in df_filtered.columns:
+        df_filtered[col] = (
+            df_filtered[col]
+            .astype(str)
+            .str.strip()
+            .str.replace(r'[\u00A0\u202F]', '', regex=True)
+        )
 
-def filter_data(df, name_filter, desc_filter, start_date, end_date):
-    df_filtered = df.copy()
+# Filtr kategorii
+if selected_category and selected_category != "All":
+    df_filtered = df_filtered[
+        df_filtered['Category'].str.lower() == selected_category.strip().lower()
+    ]
 
-    if 'Name' in df_filtered.columns and name_filter and len(name_filter) >= 3:
-        mask_name = df_filtered['Name'].astype(str).str.contains(name_filter, case=False, na=False)
-        df_filtered = df_filtered[mask_name]
+# Wspólne pole wyszukiwania (min 3 litery, szuka w Name OR Description)
+if search_filter and len(search_filter.strip()) >= 3:
+    pattern = search_filter.strip()
+    mask_name = df_filtered['Name'].str.contains(pattern, case=False, na=False)
+    mask_desc = df_filtered['Description'].str.contains(pattern, case=False, na=False)
+    df_filtered = df_filtered[mask_name | mask_desc]
 
-    if 'Description' in df_filtered.columns and desc_filter and len(desc_filter) >= 3:
-        mask_desc = df_filtered['Description'].astype(str).str.contains(desc_filter, case=False, na=False)
-        df_filtered = df_filtered[mask_desc]
+# Daty — pokazuje kampanie, które nachodzą na zakres
+df_filtered['Start'] = pd.to_datetime(df_filtered['Start'], dayfirst=True, errors='coerce')
+df_filtered['End'] = pd.to_datetime(df_filtered['End'], dayfirst=True, errors='coerce')
 
-    if 'Start' in df_filtered.columns and 'End' in df_filtered.columns:
-        df_filtered['Start'] = pd.to_datetime(df_filtered['Start'], errors='coerce')
-        df_filtered['End'] = pd.to_datetime(df_filtered['End'], errors='coerce')
-        df_filtered = df_filtered[
-            (df_filtered['Start'] >= pd.to_datetime(start_date)) &
-            (df_filtered['End'] <= pd.to_datetime(end_date))
-        ]
+df_filtered = df_filtered[
+    (df_filtered['End'] >= pd.to_datetime(start_date)) &
+    (df_filtered['Start'] <= pd.to_datetime(end_date))
+]
 
-    return df_filtered
-
+return df_filtered
+```
 
 def estimate_demand(earlier_df, later_df, percentage):
-    earlier_mean = earlier_df['Demand'].mean() if not earlier_df.empty else 0
-    later_mean = later_df['Demand'].mean() if not later_df.empty else 0
-    adjusted_earlier = earlier_mean * (1 + percentage / 100)
-    if earlier_df.empty and later_df.empty:
-        return None
-    elif earlier_df.empty:
-        return later_mean
-    elif later_df.empty:
-        return adjusted_earlier
-    else:
-        return (adjusted_earlier + later_mean) / 2
+earlier_mean = earlier_df['Demand'].mean() if not earlier_df.empty else 0
+later_mean = later_df['Demand'].mean() if not later_df.empty else 0
+adjusted_earlier = earlier_mean * (1 + percentage / 100)
+if earlier_df.empty and later_df.empty:
+return None
+elif earlier_df.empty:
+return later_mean
+elif later_df.empty:
+return adjusted_earlier
+else:
+return (adjusted_earlier + later_mean) / 2
 
+def reorder_columns(df):
+cols = df.columns.tolist()
+if 'Name' in cols and 'Description' in cols:
+cols.remove('Description')
+idx = cols.index('Name') + 1
+cols.insert(idx, 'Description')
+return df[cols]
+return df
 
-uploaded_file = st.file_uploader("📂 Upload Excel file (.xlsx)", type=["xlsx"])
+st.title("📊 Campaign Estimator (Excel Version)")
+
+uploaded_file = st.file_uploader("📂 Upload campaign data Excel file", type=["xlsx", "xls"])
 
 if uploaded_file:
-    try:
-        raw_bytes = uploaded_file.read()
-        df = load_excel_and_unmerge(raw_bytes)
+try:
+raw_bytes = uploaded_file.read()
+df = load_excel_and_unmerge(raw_bytes)
+df = clean_demand_column(df)
 
-        st.write("📋 Preview of loaded data:")
-        st.dataframe(df.head(20))
+```
+    required_cols = {'Country', 'Name', 'Description', 'Start', 'End', 'Demand', 'Category'}
+    if not required_cols.issubset(df.columns):
+        st.error(f"❌ Missing required columns: {required_cols - set(df.columns)}")
+    else:
+        country_list = df['Country'].dropna().unique().tolist()
+        selected_country = st.selectbox("🌍 Select country:", country_list)
 
-        required_cols = {'Start', 'End', 'Name', 'Description', 'Demand'}
-        if not required_cols.issubset(df.columns):
-            st.error(f"❌ Missing required columns: {required_cols - set(df.columns)}")
-        else:
-            df = clean_demand_column(df)
+        categories = df['Category'].dropna().unique().tolist()
+        categories = sorted(categories)
+        selected_category = st.selectbox("🏷️ Select category:", ["All"] + categories)
 
-            st.subheader("🔍 Filters")
-            name_filter = st.text_input("Filter by Name (min 3 letters):")
-            desc_filter = st.text_input("Filter by Description (min 3 letters):")
+        search_filter = st.text_input("🔎 Search campaigns by name or description (min 3 letters):")
 
-            st.subheader("⏳ Earlier Period")
-            earlier_start_date = st.date_input("Start date (Earlier Period):", key='earlier_start')
-            earlier_end_date = st.date_input("End date (Earlier Period):", key='earlier_end')
+        st.subheader("⏳ Earlier Period")
+        earlier_start_date = st.date_input("Start date (Earlier Period):", key='earlier_start')
+        earlier_end_date = st.date_input("End date (Earlier Period):", key='earlier_end')
 
-            st.subheader("📈 Target Growth (%)")
-            target_growth = st.number_input(
-                "Enter growth percentage (can be negative):",
-                min_value=-100, max_value=1000, step=1, format="%d"
+        st.subheader("📈 Target growth from Earlier Period (%)")
+        target_growth = st.number_input(
+            "Enter growth percentage (can be negative):",
+            min_value=-100, max_value=1000, step=1, format="%d"
+        )
+
+        st.subheader("⏳ Later Period")
+        later_start_date = st.date_input("Start date (Later Period):", key='later_start')
+        later_end_date = st.date_input("End date (Later Period):", key='later_end')
+
+        earlier_filtered = filter_data(df, selected_country, search_filter, earlier_start_date, earlier_end_date, selected_category)
+        later_filtered = filter_data(df, selected_country, search_filter, later_start_date, later_end_date, selected_category)
+
+        earlier_filtered = reorder_columns(earlier_filtered)
+        later_filtered = reorder_columns(later_filtered)
+
+        st.subheader("Select campaigns to include from Earlier Period:")
+        earlier_selections = {
+            idx: st.checkbox(
+                f"{row['Name']} | {row['Description']} | Start: {row['Start'].date()} | End: {row['End'].date()} | Demand: {row['Demand']}",
+                value=True, key=f"earlier_{idx}"
             )
+            for idx, row in earlier_filtered.iterrows()
+        }
 
-            st.subheader("⏳ Later Period")
-            later_start_date = st.date_input("Start date (Later Period):", key='later_start')
-            later_end_date = st.date_input("End date (Later Period):", key='later_end')
+        st.subheader("Select campaigns to include from Later Period:")
+        later_selections = {
+            idx: st.checkbox(
+                f"{row['Name']} | {row['Description']} | Start: {row['Start'].date()} | End: {row['End'].date()} | Demand: {row['Demand']}",
+                value=True, key=f"later_{idx}"
+            )
+            for idx, row in later_filtered.iterrows()
+        }
 
-            earlier_filtered = filter_data(df, name_filter, desc_filter, earlier_start_date, earlier_end_date)
-            later_filtered = filter_data(df, name_filter, desc_filter, later_start_date, later_end_date)
+        earlier_selected_df = earlier_filtered.loc[[idx for idx, checked in earlier_selections.items() if checked]]
+        later_selected_df = later_filtered.loc[[idx for idx, checked in later_selections.items() if checked]]
 
-            st.write("Earlier Period Data:")
-            st.dataframe(earlier_filtered)
-            st.write("Later Period Data:")
-            st.dataframe(later_filtered)
-
-            if st.button("📊 Calculate Estimation"):
-                if earlier_filtered.empty and later_filtered.empty:
-                    st.warning("⚠️ No data in selected periods for estimation.")
+        if st.button("📈 Calculate Estimation"):
+            if earlier_selected_df.empty and later_selected_df.empty:
+                st.warning("⚠️ No campaigns selected in either period for estimation.")
+            else:
+                estimation = estimate_demand(earlier_selected_df, later_selected_df, target_growth)
+                if estimation is None:
+                    st.warning("⚠️ Unable to calculate estimation with the given data.")
                 else:
-                    estimation = estimate_demand(earlier_filtered, later_filtered, target_growth)
-                    if estimation is None:
-                        st.warning("⚠️ Unable to calculate estimation with the given data.")
-                    else:
-                        st.success(f"💶 Estimated Demand: **{estimation:,.2f} EUR**")
+                    st.success(f"Estimated Demand: **{estimation:.2f} EUR**")
+                    st.markdown("### Data used for estimation:")
 
-    except Exception as e:
-        st.error(f"❌ Error processing file: {e}")
+                    if not earlier_selected_df.empty:
+                        st.write("Earlier Period Campaigns:")
+                        st.dataframe(earlier_selected_df)
+
+                    if not later_selected_df.empty:
+                        st.write("Later Period Campaigns:")
+                        st.dataframe(later_selected_df)
+
+                    combined_df = pd.concat([earlier_selected_df, later_selected_df]).drop_duplicates()
+                    csv = combined_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download selected campaigns data as CSV",
+                        data=csv,
+                        file_name='campaign_estimation_data.csv',
+                        mime='text/csv'
+                    )
+except Exception as e:
+    st.error(f"❌ Error processing file: {e}")
+```
