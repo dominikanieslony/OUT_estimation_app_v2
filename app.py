@@ -9,22 +9,14 @@ st.set_page_config(page_title="📊 Campaign Estimator", layout="wide")
 
 @st.cache_data
 def load_excel_and_unmerge(file_bytes):
-    """
-    Wczytuje plik Excel z openpyxl, rozbija scalenia i zwraca DataFrame.
-    Cached by Streamlit to speed up repeated interactions.
-    """
     wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
     ws = wb.active
 
-    # Rozbij scalone komórki (unmerge) i wypełnij każdą komórkę wartością z lewego-górnego rogu
     for merged_range in list(ws.merged_cells.ranges):
-        # pobierz wartość z lewego-górnego rogu scalenia
         tl_row = merged_range.min_row
         tl_col = merged_range.min_col
         top_left_value = ws.cell(row=tl_row, column=tl_col).value
-        # unmerge
         ws.unmerge_cells(range_string=str(merged_range))
-        # wypełnij cały zakres tą wartością
         for r in ws.iter_rows(min_row=merged_range.min_row,
                               max_row=merged_range.max_row,
                               min_col=merged_range.min_col,
@@ -32,7 +24,6 @@ def load_excel_and_unmerge(file_bytes):
             for cell in r:
                 cell.value = top_left_value
 
-    # Dodatkowa ochrona: jeśli któreś komórki w kolumnie są puste, wypełnij z góry w dół
     for col in ws.columns:
         prev_value = None
         for cell in col:
@@ -41,7 +32,6 @@ def load_excel_and_unmerge(file_bytes):
             else:
                 cell.value = prev_value
 
-    # Konwersja arkusza do DataFrame (pierwszy wiersz to nagłówki)
     data_iter = ws.values
     try:
         headers = next(data_iter)
@@ -51,10 +41,7 @@ def load_excel_and_unmerge(file_bytes):
     df = pd.DataFrame(data_iter, columns=headers)
     wb.close()
 
-    # Wypełnij NaN w dół (po operacjach unmerge)
     df = df.ffill(axis=0)
-
-    # Oczyść nagłówki: usuń spacje na początku/końcu i niełamliwe spacje
     df.columns = (
         df.columns.astype(str)
         .str.strip()
@@ -65,31 +52,20 @@ def load_excel_and_unmerge(file_bytes):
 
 
 def clean_demand_column(df, demand_col='Demand'):
-    """
-    Czyszczenie kolumny Demand:
-    - usuwa spacje (zwykłe i niełamliwe), symbole walut i znaki nieliczbowe,
-    - zamienia przecinek na kropkę w przypadku separatora dziesiętnego,
-    - konwertuje na float lub None.
-    """
     def parse_demand(val):
         if pd.isna(val):
             return None
-        # jeśli już liczba
         if isinstance(val, (int, float)) and not isinstance(val, bool):
             return float(val)
         s = str(val)
-        # usuń spacje zwykłe i niełamliwe
         s = s.replace('\u00A0', '').replace('\u202F', '').replace(' ', '')
-        # usuń symbole waluty i inne znaki (zostaw cyfry, kropkę, przecinek, minus)
         s = re.sub(r'[^\d,.\-]', '', s)
-        # traktuj pojedynczy przecinek jako separator dziesiętny
         if s.count(',') == 1 and s.count('.') == 0:
             s = s.replace(',', '.')
         if s == '' or s == '-' or s == '.' or s == ',':
             return None
         try:
             num = float(s)
-            # odrzuć absurdalnie duże liczby, które wynikają z błędnej konwersji
             if abs(num) > 1e12:
                 return None
             return num
@@ -98,7 +74,6 @@ def clean_demand_column(df, demand_col='Demand'):
 
     if demand_col in df.columns:
         df[demand_col] = df[demand_col].apply(parse_demand)
-        # info diagnostyczne
         valid = df[demand_col].notna().sum()
         invalid = df[demand_col].isna().sum()
         st.info(f"Demand cleaned — valid: {valid}, invalid: {invalid}")
@@ -108,20 +83,11 @@ def clean_demand_column(df, demand_col='Demand'):
 
 
 def filter_data(df, country, search_filter, start_date, end_date, selected_category=None):
-    """
-    Filtrowanie danych:
-    - wybór kraju,
-    - czyszczenie tekstów (strip + usuwanie niełamliwych spacji),
-    - wyszukiwanie (min 3 znaki) w Name OR Description,
-    - filtrowanie po kategorii (opcjonalnie),
-    - filtrowanie po nakładaniu się z zakresem dat.
-    """
     if 'Country' not in df.columns:
-        return pd.DataFrame()  # brak kolumny Country
+        return pd.DataFrame()
 
     df_filtered = df[df['Country'] == country].copy()
 
-    # Czyść wartości tekstowe w kolumnach
     for col in ['Name', 'Description', 'Category']:
         if col in df_filtered.columns:
             df_filtered[col] = (
@@ -130,19 +96,15 @@ def filter_data(df, country, search_filter, start_date, end_date, selected_categ
                 .str.replace(r'[\u00A0\u202F]', '', regex=True)
             )
 
-    # Filtr kategorii
     if selected_category and selected_category != "All" and 'Category' in df_filtered.columns:
         df_filtered = df_filtered[df_filtered['Category'].str.lower() == selected_category.strip().lower()]
 
-    # Wspólne pole wyszukiwania (min 3 znaki)
     if search_filter and len(search_filter.strip()) >= 3:
-        pattern = search_filter.strip()
-        # zabezpiecz, że kolumny istnieją
-        name_mask = df_filtered['Name'].str.contains(pattern, case=False, na=False) if 'Name' in df_filtered.columns else False
-        desc_mask = df_filtered['Description'].str.contains(pattern, case=False, na=False) if 'Description' in df_filtered.columns else False
+        pattern = search_filter.strip().replace('\u00A0', '').replace('\u202F', '')
+        name_mask = df_filtered['Name'].str.contains(pattern, case=False, na=False, regex=False) if 'Name' in df_filtered.columns else pd.Series(False, index=df_filtered.index)
+        desc_mask = df_filtered['Description'].str.contains(pattern, case=False, na=False, regex=False) if 'Description' in df_filtered.columns else pd.Series(False, index=df_filtered.index)
         df_filtered = df_filtered[name_mask | desc_mask]
 
-    # Parsowanie dat i filtrowanie po nakładaniu się zakresów
     if 'Start' in df_filtered.columns and 'End' in df_filtered.columns:
         df_filtered['Start'] = pd.to_datetime(df_filtered['Start'], dayfirst=True, errors='coerce')
         df_filtered['End'] = pd.to_datetime(df_filtered['End'], dayfirst=True, errors='coerce')
@@ -189,11 +151,9 @@ if uploaded_file is not None:
         if df.empty:
             st.error("No data read from Excel.")
         else:
-            # Oczyść nagłówki jeszcze raz (na wszelki wypadek) i pokaż kolumny
             df.columns = df.columns.astype(str).str.strip().str.replace(r'[\u00A0\u202F]', '', regex=True)
             st.write("Columns found:", list(df.columns))
 
-            # wymagane kolumny
             required_cols = {'Country', 'Name', 'Description', 'Start', 'End', 'Demand'}
             missing = required_cols - set(df.columns)
             if missing:
@@ -201,7 +161,6 @@ if uploaded_file is not None:
             else:
                 df = clean_demand_column(df, demand_col='Demand')
 
-                # Filtry i wybory
                 country_list = df['Country'].dropna().unique().tolist()
                 selected_country = st.selectbox("🌍 Select country:", country_list)
 
@@ -237,7 +196,6 @@ if uploaded_file is not None:
                 st.subheader("Later Period (filtered):")
                 st.dataframe(later_filtered.head(200))
 
-                # selection checkboxes
                 st.subheader("Select campaigns to include from Earlier Period:")
                 earlier_selections = {}
                 for idx, row in earlier_filtered.iterrows():
