@@ -5,7 +5,7 @@ from openpyxl import load_workbook
 from datetime import datetime
 import re
 
-st.set_page_config(page_title="📊 Campaign Estimator", layout="wide")
+st.set_page_config(page_title="📊 Campaign demand estimation app", layout="wide")
 
 @st.cache_data
 def load_excel_and_unmerge(file_bytes):
@@ -152,7 +152,7 @@ if uploaded_file is not None:
             st.error("No data read from Excel.")
         else:
             df.columns = df.columns.astype(str).str.strip().str.replace(r'[\u00A0\u202F]', '', regex=True)
-            st.write("Columns found:", list(df.columns))
+            # linia "Columns found" usunięta
 
             required_cols = {'Country', 'Name', 'Description', 'Start', 'End', 'Demand'}
             missing = required_cols - set(df.columns)
