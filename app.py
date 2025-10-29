@@ -4,18 +4,6 @@ import io
 from openpyxl import load_workbook
 from datetime import datetime
 import re
-import uuid
-
-if 'session_id' not in st.session_state:
-    st.session_state['session_id'] = str(uuid.uuid4())
-
-def clear_cache_on_session_end():
-    st.cache_data.clear()
-    st.cache_resource.clear()
-
-if '_on_session_end_registered' not in st.session_state:
-    st.session_state['_on_session_end_registered'] = True
-    st.runtime.scriptrunner.script_run_context.get_script_run_ctx().on_session_end(clear_cache_on_session_end)
 
 st.set_page_config(page_title="📊 Campaign demand estimation app", layout="wide")
 
@@ -52,13 +40,16 @@ def load_excel_and_unmerge(file_bytes):
         return pd.DataFrame()
     df = pd.DataFrame(data_iter, columns=headers)
     wb.close()
+
     df = df.ffill(axis=0)
     df.columns = (
         df.columns.astype(str)
         .str.strip()
         .str.replace(r'[\u00A0\u202F]', '', regex=True)
     )
+
     return df
+
 
 def clean_demand_column(df, demand_col='Demand'):
     def parse_demand(val):
@@ -68,10 +59,10 @@ def clean_demand_column(df, demand_col='Demand'):
             return float(val)
         s = str(val)
         s = s.replace('\u00A0', '').replace('\u202F', '').replace(' ', '')
-        s = re.sub(r'[^\d,.-]', '', s)
+        s = re.sub(r'[^\d,.\-]', '', s)
         if s.count(',') == 1 and s.count('.') == 0:
             s = s.replace(',', '.')
-        if s in ['', '-', '.', ',']:
+        if s == '' or s == '-' or s == '.' or s == ',':
             return None
         try:
             num = float(s)
@@ -83,9 +74,11 @@ def clean_demand_column(df, demand_col='Demand'):
 
     if demand_col in df.columns:
         df[demand_col] = df[demand_col].apply(parse_demand)
+        # st.info(f"Demand cleaned — valid: {valid}, invalid: {invalid}")  # <-- linia usunięta
     else:
         st.warning(f"Column '{demand_col}' not found.")
     return df
+
 
 def filter_data(df, country, search_filter, start_date, end_date, selected_category=None):
     if 'Country' not in df.columns:
@@ -119,6 +112,7 @@ def filter_data(df, country, search_filter, start_date, end_date, selected_categ
 
     return df_filtered
 
+
 def estimate_demand(earlier_df, later_df, percentage):
     earlier_mean = earlier_df['Demand'].mean() if (earlier_df is not None and not earlier_df.empty) else 0
     later_mean = later_df['Demand'].mean() if (later_df is not None and not later_df.empty) else 0
@@ -131,6 +125,7 @@ def estimate_demand(earlier_df, later_df, percentage):
         return adjusted_earlier
     return (adjusted_earlier + later_mean) / 2
 
+
 def reorder_columns(df):
     cols = df.columns.tolist()
     if 'Name' in cols and 'Description' in cols:
@@ -140,6 +135,8 @@ def reorder_columns(df):
         return df[cols]
     return df
 
+
+# ---- Main UI ----
 st.title("📊 Campaign demand estimation app")
 
 uploaded_file = st.file_uploader("📂 Upload campaign data Excel file (.xlsx/.xls)", type=["xlsx", "xls"])
@@ -148,50 +145,70 @@ if uploaded_file is not None:
     try:
         raw_bytes = uploaded_file.read()
         df = load_excel_and_unmerge(raw_bytes)
+
         if df.empty:
             st.error("No data read from Excel.")
         else:
             df.columns = df.columns.astype(str).str.strip().str.replace(r'[\u00A0\u202F]', '', regex=True)
+            # linia wyświetlająca kolumny usunięta
+
             required_cols = {'Country', 'Name', 'Description', 'Start', 'End', 'Demand'}
             missing = required_cols - set(df.columns)
             if missing:
                 st.error(f"Missing required columns: {missing}")
             else:
                 df = clean_demand_column(df, demand_col='Demand')
+
                 country_list = df['Country'].dropna().unique().tolist()
                 selected_country = st.selectbox("🌍 Select country:", country_list)
+
                 categories = df['Category'].dropna().unique().tolist() if 'Category' in df.columns else []
                 categories = sorted(categories)
                 selected_category = st.selectbox("🏷️ Select category:", ["All"] + categories)
+
                 search_filter = st.text_input("🔎 Search campaigns by name or description (min 3 letters):")
+
                 st.subheader("⏳ Earlier Period")
                 earlier_start_date = st.date_input("Start date (Earlier Period):", key='earlier_start')
                 earlier_end_date = st.date_input("End date (Earlier Period):", key='earlier_end')
+
                 st.subheader("⏳ Later Period")
                 later_start_date = st.date_input("Start date (Later Period):", key='later_start')
                 later_end_date = st.date_input("End date (Later Period):", key='later_end')
+
                 st.subheader("📈 Target growth from Earlier Period (%)")
-                target_growth = st.number_input("Enter growth percentage (can be negative):", min_value=-100, max_value=1000, step=1, format="%d")
+                target_growth = st.number_input(
+                    "Enter growth percentage (can be negative):",
+                    min_value=-100, max_value=1000, step=1, format="%d"
+                )
+
                 earlier_filtered = filter_data(df, selected_country, search_filter, earlier_start_date, earlier_end_date, selected_category)
                 later_filtered = filter_data(df, selected_country, search_filter, later_start_date, later_end_date, selected_category)
+
                 earlier_filtered = reorder_columns(earlier_filtered)
                 later_filtered = reorder_columns(later_filtered)
+
                 st.subheader("Earlier Period (filtered):")
                 st.dataframe(earlier_filtered.head(200))
+
                 st.subheader("Later Period (filtered):")
                 st.dataframe(later_filtered.head(200))
+
                 st.subheader("Select campaigns to include from Earlier Period:")
                 earlier_selections = {}
                 for idx, row in earlier_filtered.iterrows():
                     label = f"{row.get('Name','')} | {row.get('Description','')} | Start: {row.get('Start','')} | End: {row.get('End','')} | Demand: {row.get('Demand','')}"
                     earlier_selections[idx] = st.checkbox(label, value=True, key=f"earlier_{idx}")
+
                 st.subheader("Select campaigns to include from Later Period:")
                 later_selections = {}
                 for idx, row in later_filtered.iterrows():
                     label = f"{row.get('Name','')} | {row.get('Description','')} | Start: {row.get('Start','')} | End: {row.get('End','')} | Demand: {row.get('Demand','')}"
                     later_selections[idx] = st.checkbox(label, value=True, key=f"later_{idx}")
+
                 earlier_selected_df = earlier_filtered.loc[[i for i,v in earlier_selections.items() if v]] if earlier_selections else pd.DataFrame()
                 later_selected_df = later_filtered.loc[[i for i,v in later_selections.items() if v]] if later_selections else pd.DataFrame()
+
                 if st.button("📈 Calculate Estimation"):
                     if earlier_selected_df.empty and later_selected_df.empty:
                         st.warning("No campaigns selected in either period for estimation.")
@@ -210,6 +227,12 @@ if uploaded_file is not None:
                                 st.dataframe(later_selected_df)
                             combined_df = pd.concat([earlier_selected_df, later_selected_df]).drop_duplicates()
                             csv = combined_df.to_csv(index=False).encode('utf-8')
-                            st.download_button(label="📥 Download selected campaigns data as CSV", data=csv, file_name='campaign_estimation_data.csv', mime='text/csv')
+                            st.download_button(
+                                label="📥 Download selected campaigns data as CSV",
+                                data=csv,
+                                file_name='campaign_estimation_data.csv',
+                                mime='text/csv'
+                            )
+
     except Exception as e:
         st.error(f"Error processing file: {e}")
