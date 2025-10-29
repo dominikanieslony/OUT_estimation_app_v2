@@ -4,8 +4,24 @@ import io
 from openpyxl import load_workbook
 from datetime import datetime
 import re
+import uuid
 
 st.set_page_config(page_title="📊 Campaign demand estimation app", layout="wide")
+
+if 'session_id' not in st.session_state:
+    st.session_state['session_id'] = str(uuid.uuid4())
+
+def clear_cache_and_session():
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.session_state.clear()
+
+if '_on_session_end_registered' not in st.session_state:
+    st.session_state['_on_session_end_registered'] = True
+    try:
+        st.runtime.scriptrunner.script_run_context.get_script_run_ctx().on_session_end(clear_cache_and_session)
+    except Exception:
+        pass
 
 @st.cache_data
 def load_excel_and_unmerge(file_bytes):
@@ -42,14 +58,8 @@ def load_excel_and_unmerge(file_bytes):
     wb.close()
 
     df = df.ffill(axis=0)
-    df.columns = (
-        df.columns.astype(str)
-        .str.strip()
-        .str.replace(r'[\u00A0\u202F]', '', regex=True)
-    )
-
+    df.columns = df.columns.astype(str).str.strip().str.replace(r'[\u00A0\u202F]', '', regex=True)
     return df
-
 
 def clean_demand_column(df, demand_col='Demand'):
     def parse_demand(val):
@@ -62,7 +72,7 @@ def clean_demand_column(df, demand_col='Demand'):
         s = re.sub(r'[^\d,.\-]', '', s)
         if s.count(',') == 1 and s.count('.') == 0:
             s = s.replace(',', '.')
-        if s == '' or s == '-' or s == '.' or s == ',':
+        if s in ['', '-', '.', ',']:
             return None
         try:
             num = float(s)
@@ -74,11 +84,9 @@ def clean_demand_column(df, demand_col='Demand'):
 
     if demand_col in df.columns:
         df[demand_col] = df[demand_col].apply(parse_demand)
-        # st.info(f"Demand cleaned — valid: {valid}, invalid: {invalid}")  # <-- linia usunięta
     else:
         st.warning(f"Column '{demand_col}' not found.")
     return df
-
 
 def filter_data(df, country, search_filter, start_date, end_date, selected_category=None):
     if 'Country' not in df.columns:
@@ -88,11 +96,7 @@ def filter_data(df, country, search_filter, start_date, end_date, selected_categ
 
     for col in ['Name', 'Description', 'Category']:
         if col in df_filtered.columns:
-            df_filtered[col] = (
-                df_filtered[col].astype(str)
-                .str.strip()
-                .str.replace(r'[\u00A0\u202F]', '', regex=True)
-            )
+            df_filtered[col] = df_filtered[col].astype(str).str.strip().str.replace(r'[\u00A0\u202F]', '', regex=True)
 
     if selected_category and selected_category != "All" and 'Category' in df_filtered.columns:
         df_filtered = df_filtered[df_filtered['Category'].str.lower() == selected_category.strip().lower()]
@@ -112,7 +116,6 @@ def filter_data(df, country, search_filter, start_date, end_date, selected_categ
 
     return df_filtered
 
-
 def estimate_demand(earlier_df, later_df, percentage):
     earlier_mean = earlier_df['Demand'].mean() if (earlier_df is not None and not earlier_df.empty) else 0
     later_mean = later_df['Demand'].mean() if (later_df is not None and not later_df.empty) else 0
@@ -125,7 +128,6 @@ def estimate_demand(earlier_df, later_df, percentage):
         return adjusted_earlier
     return (adjusted_earlier + later_mean) / 2
 
-
 def reorder_columns(df):
     cols = df.columns.tolist()
     if 'Name' in cols and 'Description' in cols:
@@ -135,8 +137,6 @@ def reorder_columns(df):
         return df[cols]
     return df
 
-
-# ---- Main UI ----
 st.title("📊 Campaign demand estimation app")
 
 uploaded_file = st.file_uploader("📂 Upload campaign data Excel file (.xlsx/.xls)", type=["xlsx", "xls"])
@@ -150,7 +150,6 @@ if uploaded_file is not None:
             st.error("No data read from Excel.")
         else:
             df.columns = df.columns.astype(str).str.strip().str.replace(r'[\u00A0\u202F]', '', regex=True)
-            # linia wyświetlająca kolumny usunięta
 
             required_cols = {'Country', 'Name', 'Description', 'Start', 'End', 'Demand'}
             missing = required_cols - set(df.columns)
@@ -158,7 +157,6 @@ if uploaded_file is not None:
                 st.error(f"Missing required columns: {missing}")
             else:
                 df = clean_demand_column(df, demand_col='Demand')
-
                 country_list = df['Country'].dropna().unique().tolist()
                 selected_country = st.selectbox("🌍 Select country:", country_list)
 
@@ -177,10 +175,7 @@ if uploaded_file is not None:
                 later_end_date = st.date_input("End date (Later Period):", key='later_end')
 
                 st.subheader("📈 Target growth from Earlier Period (%)")
-                target_growth = st.number_input(
-                    "Enter growth percentage (can be negative):",
-                    min_value=-100, max_value=1000, step=1, format="%d"
-                )
+                target_growth = st.number_input("Enter growth percentage (can be negative):", min_value=-100, max_value=1000, step=1, format="%d")
 
                 earlier_filtered = filter_data(df, selected_country, search_filter, earlier_start_date, earlier_end_date, selected_category)
                 later_filtered = filter_data(df, selected_country, search_filter, later_start_date, later_end_date, selected_category)
@@ -227,12 +222,6 @@ if uploaded_file is not None:
                                 st.dataframe(later_selected_df)
                             combined_df = pd.concat([earlier_selected_df, later_selected_df]).drop_duplicates()
                             csv = combined_df.to_csv(index=False).encode('utf-8')
-                            st.download_button(
-                                label="📥 Download selected campaigns data as CSV",
-                                data=csv,
-                                file_name='campaign_estimation_data.csv',
-                                mime='text/csv'
-                            )
-
+                            st.download_button(label="📥 Download selected campaigns data as CSV", data=csv, file_name='campaign_estimation_data.csv', mime='text/csv')
     except Exception as e:
         st.error(f"Error processing file: {e}")
