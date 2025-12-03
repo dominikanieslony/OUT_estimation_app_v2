@@ -107,12 +107,12 @@ def filter_data(df, country, search_filter, start_date, end_date, selected_categ
         desc_mask = df_filtered['Description'].str.contains(pattern, case=False, na=False, regex=False) if 'Description' in df_filtered.columns else pd.Series(False, index=df_filtered.index)
         df_filtered = df_filtered[name_mask | desc_mask]
 
-    if 'Start' in df_filtered.columns and 'End' in df_filtered.columns:
-        df_filtered['Start'] = pd.to_datetime(df_filtered['Start'], dayfirst=True, errors='coerce')
+    # Filtrowanie tylko po kolumnie 'End'
+    if 'End' in df_filtered.columns:
         df_filtered['End'] = pd.to_datetime(df_filtered['End'], dayfirst=True, errors='coerce')
         start_ts = pd.to_datetime(start_date)
         end_ts = pd.to_datetime(end_date)
-        df_filtered = df_filtered[(df_filtered['End'] >= start_ts) & (df_filtered['Start'] <= end_ts)]
+        df_filtered = df_filtered[(df_filtered['End'] >= start_ts) & (df_filtered['End'] <= end_ts)]
 
     return df_filtered
 
@@ -151,7 +151,7 @@ if uploaded_file is not None:
         else:
             df.columns = df.columns.astype(str).str.strip().str.replace(r'[\u00A0\u202F]', '', regex=True)
 
-            required_cols = {'Country', 'Name', 'Description', 'Start', 'End', 'Demand'}
+            required_cols = {'Country', 'Name', 'Description', 'End', 'Demand'}
             missing = required_cols - set(df.columns)
             if missing:
                 st.error(f"Missing required columns: {missing}")
@@ -167,12 +167,12 @@ if uploaded_file is not None:
                 search_filter = st.text_input("🔎 Search campaigns by name or description (min 3 letters):")
 
                 st.subheader("⏳ Earlier Period")
-                earlier_start_date = st.date_input("Start date (Earlier Period):", key='earlier_start')
-                earlier_end_date = st.date_input("End date (Earlier Period):", key='earlier_end')
+                earlier_start_date = st.date_input("Start of End date range (Earlier Period):", key='earlier_start')
+                earlier_end_date = st.date_input("End of End date range (Earlier Period):", key='earlier_end')
 
                 st.subheader("⏳ Later Period")
-                later_start_date = st.date_input("Start date (Later Period):", key='later_start')
-                later_end_date = st.date_input("End date (Later Period):", key='later_end')
+                later_start_date = st.date_input("Start of End date range (Later Period):", key='later_start')
+                later_end_date = st.date_input("End of End date range (Later Period):", key='later_end')
 
                 st.subheader("📈 Target growth from Earlier Period (%)")
                 target_growth = st.number_input("Enter growth percentage (can be negative):", min_value=-100, max_value=1000, step=1, format="%d")
@@ -192,13 +192,13 @@ if uploaded_file is not None:
                 st.subheader("Select campaigns to include from Earlier Period:")
                 earlier_selections = {}
                 for idx, row in earlier_filtered.iterrows():
-                    label = f"{row.get('Name','')} | {row.get('Description','')} | Start: {row.get('Start','')} | End: {row.get('End','')} | Demand: {row.get('Demand','')}"
+                    label = f"{row.get('Name','')} | {row.get('Description','')} | End: {row.get('End','')} | Demand: {row.get('Demand','')}"
                     earlier_selections[idx] = st.checkbox(label, value=True, key=f"earlier_{idx}")
 
                 st.subheader("Select campaigns to include from Later Period:")
                 later_selections = {}
                 for idx, row in later_filtered.iterrows():
-                    label = f"{row.get('Name','')} | {row.get('Description','')} | Start: {row.get('Start','')} | End: {row.get('End','')} | Demand: {row.get('Demand','')}"
+                    label = f"{row.get('Name','')} | {row.get('Description','')} | End: {row.get('End','')} | Demand: {row.get('Demand','')}"
                     later_selections[idx] = st.checkbox(label, value=True, key=f"later_{idx}")
 
                 earlier_selected_df = earlier_filtered.loc[[i for i,v in earlier_selections.items() if v]] if earlier_selections else pd.DataFrame()
